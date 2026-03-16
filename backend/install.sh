@@ -4,13 +4,15 @@ echo "Installing DockMon Agent..."
 
 INSTALL_DIR="$HOME/.dockmon"
 
-mkdir -p $INSTALL_DIR
-
-echo "Downloading agent..."
-
-git clone https://github.com/Hargun-singhh/dockmon-agent.git $INSTALL_DIR
-
-cd $INSTALL_DIR
+if [ -d "$INSTALL_DIR" ]; then
+  echo "Updating DockMon Agent..."
+  cd $INSTALL_DIR
+  git pull
+else
+  echo "Downloading agent..."
+  git clone https://github.com/Hargun-singhh/dockmon-agent.git $INSTALL_DIR
+  cd $INSTALL_DIR
+fi
 
 echo "Installing dependencies..."
 
