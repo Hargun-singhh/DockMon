@@ -49,7 +49,14 @@ SERVE AGENT FILE
 */
 
 app.get("/agent.js", (_req, res) => {
-  res.sendFile(path.join(__dirname, "agents", "agent.js"));
+  const agentPath = path.join(__dirname, "agents", "agent.js");
+
+  res.sendFile(agentPath, (err) => {
+    if (err) {
+      console.error("Failed to serve agent.js:", err);
+      res.status(404).json({ error: "Agent file not found" });
+    }
+  });
 });
 
 /*
@@ -60,20 +67,21 @@ AUTH MIDDLEWARE
 
 app.use(async (req, res, next) => {
 
-  // Public routes
-  if (
-    req.path === "/health" ||
-    req.path === "/install" ||
-    req.path === "/agent.js"
-  ) {
+  const publicRoutes = ["/health", "/install", "/agent.js"];
+
+  if (publicRoutes.includes(req.path)) {
     return next();
   }
 
   try {
 
     const user = await verifyAuthToken(req.headers.authorization);
-    req.user = user;
 
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    req.user = user;
     next();
 
   } catch (error) {
@@ -104,7 +112,7 @@ app.use((error, _req, res, _next) => {
   const message = error.message || "Internal server error";
 
   if (statusCode >= 500) {
-    console.error(error);
+    console.error("Server error:", error);
   }
 
   res.status(statusCode).json({ error: message });
@@ -168,6 +176,8 @@ wss.on("connection", (ws) => {
 
       registerConnection(device.id, ws);
 
+      console.log(`Agent connected: ${device.device_name}`);
+
       await supabase
         .from("devices")
         .update({ status: "online" })
@@ -204,14 +214,16 @@ wss.on("connection", (ws) => {
           }
 
         } catch (err) {
-          console.error("Failed to process agent message", err);
+
+          console.error("Failed to process agent message:", err);
+
         }
 
       });
 
     } catch (error) {
 
-      console.error("Agent registration failed", error);
+      console.error("Agent registration failed:", error);
       ws.close(1011, "Registration failed");
 
     }
@@ -232,6 +244,8 @@ wss.on("connection", (ws) => {
 
     rejectPendingRequestsForDevice(deviceId);
 
+    console.log(`Agent disconnected: ${deviceId}`);
+
     try {
 
       await supabase
@@ -241,7 +255,7 @@ wss.on("connection", (ws) => {
 
     } catch (err) {
 
-      console.error("Failed to mark device offline", err);
+      console.error("Failed to mark device offline:", err);
 
     }
 
