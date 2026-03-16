@@ -49,7 +49,7 @@ SERVE AGENT FILE
 */
 
 app.get("/agent.js", (_req, res) => {
-  const agentPath = path.join(__dirname, "agents", "agent.js");
+  const agentPath = path.join(__dirname, "agent", "agent.js");
 
   res.sendFile(agentPath, (err) => {
     if (err) {
