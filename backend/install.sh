@@ -10,9 +10,20 @@ echo "Downloading agent..."
 
 curl -fsSL https://dockmon.onrender.com/agent.js -o $INSTALL_DIR/agent.js
 
+cd $INSTALL_DIR
+
+echo "Installing dependencies..."
+
+npm init -y >/dev/null 2>&1
+npm install ws dockerode dotenv >/dev/null 2>&1
+
 chmod +x $INSTALL_DIR/agent.js
 
-sudo ln -sf $INSTALL_DIR/agent.js /usr/local/bin/dockmon-agent
+echo "Creating dockmon-agent command..."
+
+echo '#!/bin/bash' | sudo tee /usr/local/bin/dockmon-agent > /dev/null
+echo "node $INSTALL_DIR/agent.js" | sudo tee -a /usr/local/bin/dockmon-agent > /dev/null
+sudo chmod +x /usr/local/bin/dockmon-agent
 
 echo ""
 echo "DockMon Agent installed successfully!"
