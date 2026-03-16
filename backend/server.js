@@ -44,16 +44,27 @@ app.get("/install", (_req, res) => {
 
 /*
 ------------------------------------------------
+SERVE AGENT FILE
+------------------------------------------------
+*/
+
+app.get("/agent.js", (_req, res) => {
+  res.sendFile(path.join(__dirname, "agents", "agent.js"));
+});
+
+/*
+------------------------------------------------
 AUTH MIDDLEWARE
 ------------------------------------------------
 */
 
 app.use(async (req, res, next) => {
 
-  // Allow public endpoints without auth
+  // Public routes
   if (
     req.path === "/health" ||
-    req.path === "/install"
+    req.path === "/install" ||
+    req.path === "/agent.js"
   ) {
     return next();
   }

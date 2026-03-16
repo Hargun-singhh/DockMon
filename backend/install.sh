@@ -4,23 +4,13 @@ echo "Installing DockMon Agent..."
 
 INSTALL_DIR="$HOME/.dockmon"
 
+mkdir -p $INSTALL_DIR
 
-if [ -d "$INSTALL_DIR" ]; then
-  echo "Updating DockMon Agent..."
-  cd $INSTALL_DIR
-  git fetch origin
-  git reset --hard origin/main
-else
-  echo "Downloading agent..."
-  git clone https://github.com/Hargun-singhh/dockmon-agent.git $INSTALL_DIR
-  cd $INSTALL_DIR
-fi
+echo "Downloading agent..."
 
-echo "Installing dependencies..."
+curl -fsSL https://dockmon.onrender.com/agent.js -o $INSTALL_DIR/agent.js
 
-npm install
-
-chmod +x agent.js
+chmod +x $INSTALL_DIR/agent.js
 
 sudo ln -sf $INSTALL_DIR/agent.js /usr/local/bin/dockmon-agent
 
