@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
+const path = require("path");
 
 const devicesRouter = require("./routes/devices");
 
@@ -33,22 +34,43 @@ app.get("/health", (_req, res) => {
 
 /*
 ------------------------------------------------
+INSTALL SCRIPT
+------------------------------------------------
+*/
+
+app.get("/install", (_req, res) => {
+  res.sendFile(path.join(__dirname, "install.sh"));
+});
+
+/*
+------------------------------------------------
 AUTH MIDDLEWARE
 ------------------------------------------------
 */
 
 app.use(async (req, res, next) => {
-  if (req.path === "/health") {
+
+  // Allow public endpoints without auth
+  if (
+    req.path === "/health" ||
+    req.path === "/install"
+  ) {
     return next();
   }
 
   try {
+
     const user = await verifyAuthToken(req.headers.authorization);
     req.user = user;
+
     next();
+
   } catch (error) {
+
     next(error);
+
   }
+
 });
 
 /*
@@ -66,6 +88,7 @@ ERROR HANDLER
 */
 
 app.use((error, _req, res, _next) => {
+
   const statusCode = error.statusCode || 500;
   const message = error.message || "Internal server error";
 
@@ -74,6 +97,7 @@ app.use((error, _req, res, _next) => {
   }
 
   res.status(statusCode).json({ error: message });
+
 });
 
 /*
@@ -83,6 +107,7 @@ WEBSOCKET UPGRADE
 */
 
 server.on("upgrade", (request, socket, head) => {
+
   if (request.url !== "/agent") {
     socket.destroy();
     return;
@@ -91,19 +116,23 @@ server.on("upgrade", (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });
+
 });
 
 /*
 ------------------------------------------------
-WEBSOCKET CONNECTION (LAPTOP AGENTS)
+WEBSOCKET CONNECTION (AGENTS)
 ------------------------------------------------
 */
 
 wss.on("connection", (ws) => {
+
   let registeredDevice = null;
 
   ws.once("message", async (buffer) => {
+
     try {
+
       const message = JSON.parse(buffer.toString());
 
       if (message.type !== "register" || !message.device_token) {
@@ -133,13 +162,11 @@ wss.on("connection", (ws) => {
         .update({ status: "online" })
         .eq("id", device.id);
 
-      ws.send(
-        JSON.stringify({
-          type: "registered",
-          device_id: device.id,
-          device_name: device.device_name
-        })
-      );
+      ws.send(JSON.stringify({
+        type: "registered",
+        device_id: device.id,
+        device_name: device.device_name
+      }));
 
       /*
       ---------------------------------------------
@@ -148,7 +175,9 @@ wss.on("connection", (ws) => {
       */
 
       ws.on("message", async (messageBuffer) => {
+
         try {
+
           const agentMessage = JSON.parse(messageBuffer.toString());
 
           const handled = resolvePendingRequest({
@@ -166,12 +195,16 @@ wss.on("connection", (ws) => {
         } catch (err) {
           console.error("Failed to process agent message", err);
         }
+
       });
 
     } catch (error) {
+
       console.error("Agent registration failed", error);
       ws.close(1011, "Registration failed");
+
     }
+
   });
 
   /*
@@ -181,6 +214,7 @@ wss.on("connection", (ws) => {
   */
 
   ws.on("close", async () => {
+
     const deviceId = unregisterConnection(ws);
 
     if (!deviceId) return;
@@ -188,21 +222,29 @@ wss.on("connection", (ws) => {
     rejectPendingRequestsForDevice(deviceId);
 
     try {
+
       await supabase
         .from("devices")
         .update({ status: "offline" })
         .eq("id", deviceId);
+
     } catch (err) {
+
       console.error("Failed to mark device offline", err);
+
     }
+
   });
 
   ws.on("error", (error) => {
+
     console.error("WebSocket error", {
       deviceId: registeredDevice?.id,
       error
     });
+
   });
+
 });
 
 /*
