@@ -1,7 +1,6 @@
 const { createClient } = require("@supabase/supabase-js");
-const jwt = require("jsonwebtoken");
 
-const requiredEnvVars = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET"];
+const requiredEnvVars = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
@@ -21,9 +20,7 @@ const supabase = createClient(
 );
 
 function extractBearerToken(authorizationHeader) {
-  if (!authorizationHeader) {
-    return null;
-  }
+  if (!authorizationHeader) return null;
 
   const [scheme, token] = authorizationHeader.split(" ");
 
@@ -38,17 +35,7 @@ async function verifyAuthToken(authorizationHeader) {
   const token = extractBearerToken(authorizationHeader);
 
   if (!token) {
-    const error = new Error("Missing or invalid Authorization header");
-    error.statusCode = 401;
-    throw error;
-  }
-
-  try {
-    jwt.verify(token, process.env.JWT_SECRET, {
-      algorithms: ["HS256"]
-    });
-  } catch (jwtError) {
-    const error = new Error("Invalid or expired token");
+    const error = new Error("Missing Authorization header");
     error.statusCode = 401;
     throw error;
   }
@@ -56,7 +43,7 @@ async function verifyAuthToken(authorizationHeader) {
   const { data, error } = await supabase.auth.getUser(token);
 
   if (error || !data.user) {
-    const authError = new Error("Unable to verify Supabase user");
+    const authError = new Error("Invalid Supabase token");
     authError.statusCode = 401;
     throw authError;
   }

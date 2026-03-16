@@ -3,14 +3,17 @@ require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
+
 const devicesRouter = require("./routes/devices");
+
 const {
   registerConnection,
-  rejectPendingRequestsForDevice,
+  unregisterConnection,
   resolvePendingRequest,
-  unregisterConnection
+  rejectPendingRequestsForDevice
 } = require("./deviceManager");
-const { supabase, verifyAuthToken } = require("./supabase");
+
+const { verifyAuthToken, supabase } = require("./supabase");
 
 const app = express();
 const server = http.createServer(app);
@@ -18,9 +21,21 @@ const wss = new WebSocketServer({ noServer: true });
 
 app.use(express.json({ limit: "1mb" }));
 
+/*
+------------------------------------------------
+HEALTH CHECK
+------------------------------------------------
+*/
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+/*
+------------------------------------------------
+AUTH MIDDLEWARE
+------------------------------------------------
+*/
 
 app.use(async (req, res, next) => {
   if (req.path === "/health") {
@@ -36,7 +51,19 @@ app.use(async (req, res, next) => {
   }
 });
 
+/*
+------------------------------------------------
+API ROUTES
+------------------------------------------------
+*/
+
 app.use("/devices", devicesRouter);
+
+/*
+------------------------------------------------
+ERROR HANDLER
+------------------------------------------------
+*/
 
 app.use((error, _req, res, _next) => {
   const statusCode = error.statusCode || 500;
@@ -49,6 +76,12 @@ app.use((error, _req, res, _next) => {
   res.status(statusCode).json({ error: message });
 });
 
+/*
+------------------------------------------------
+WEBSOCKET UPGRADE
+------------------------------------------------
+*/
+
 server.on("upgrade", (request, socket, head) => {
   if (request.url !== "/agent") {
     socket.destroy();
@@ -59,6 +92,12 @@ server.on("upgrade", (request, socket, head) => {
     wss.emit("connection", ws, request);
   });
 });
+
+/*
+------------------------------------------------
+WEBSOCKET CONNECTION (LAPTOP AGENTS)
+------------------------------------------------
+*/
 
 wss.on("connection", (ws) => {
   let registeredDevice = null;
@@ -78,9 +117,7 @@ wss.on("connection", (ws) => {
         .eq("device_token", message.device_token)
         .maybeSingle();
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       if (!device) {
         ws.close(4004, "Invalid device token");
@@ -88,16 +125,13 @@ wss.on("connection", (ws) => {
       }
 
       registeredDevice = device;
+
       registerConnection(device.id, ws);
 
-      const { error: updateError } = await supabase
+      await supabase
         .from("devices")
         .update({ status: "online" })
         .eq("id", device.id);
-
-      if (updateError) {
-        throw updateError;
-      }
 
       ws.send(
         JSON.stringify({
@@ -107,49 +141,59 @@ wss.on("connection", (ws) => {
         })
       );
 
+      /*
+      ---------------------------------------------
+      RECEIVE AGENT RESPONSES
+      ---------------------------------------------
+      */
+
       ws.on("message", async (messageBuffer) => {
         try {
           const agentMessage = JSON.parse(messageBuffer.toString());
+
           const handled = resolvePendingRequest({
             ...agentMessage,
             device_id: device.id
           });
 
           if (!handled) {
-            console.log("Received unsolicited agent message", {
+            console.log("Unsolicited message from agent", {
               deviceId: device.id,
-              type: agentMessage.type || "unknown"
+              type: agentMessage.type
             });
           }
-        } catch (messageError) {
-          console.error("Failed to process agent message", messageError);
+
+        } catch (err) {
+          console.error("Failed to process agent message", err);
         }
       });
+
     } catch (error) {
-      console.error("Failed to register agent", error);
+      console.error("Agent registration failed", error);
       ws.close(1011, "Registration failed");
     }
   });
 
+  /*
+  ------------------------------------------------
+  AGENT DISCONNECT
+  ------------------------------------------------
+  */
+
   ws.on("close", async () => {
     const deviceId = unregisterConnection(ws);
-    if (!deviceId) {
-      return;
-    }
+
+    if (!deviceId) return;
 
     rejectPendingRequestsForDevice(deviceId);
 
     try {
-      const { error } = await supabase
+      await supabase
         .from("devices")
         .update({ status: "offline" })
         .eq("id", deviceId);
-
-      if (error) {
-        throw error;
-      }
-    } catch (updateError) {
-      console.error("Failed to mark device offline", updateError);
+    } catch (err) {
+      console.error("Failed to mark device offline", err);
     }
   });
 
@@ -161,8 +205,14 @@ wss.on("connection", (ws) => {
   });
 });
 
+/*
+------------------------------------------------
+START SERVER
+------------------------------------------------
+*/
+
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-  console.log(`DockMon backend listening on port ${PORT}`);
+  console.log(`DockMon backend running on port ${PORT}`);
 });
