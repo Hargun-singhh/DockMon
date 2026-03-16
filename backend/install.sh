@@ -2,14 +2,23 @@
 
 echo "Installing DockMon Agent..."
 
-INSTALL_DIR="/usr/local/bin"
-AGENT_URL="https://raw.githubusercontent.com/Hargun-singhh/dockmon-agent/main/agent.js"
+INSTALL_DIR="$HOME/.dockmon"
 
-curl -L $AGENT_URL -o dockmon-agent
+mkdir -p $INSTALL_DIR
 
-chmod +x dockmon-agent
+echo "Downloading agent..."
 
-sudo mv dockmon-agent $INSTALL_DIR/dockmon-agent
+git clone https://github.com/Hargun-singhh/dockmon-agent.git $INSTALL_DIR
+
+cd $INSTALL_DIR
+
+echo "Installing dependencies..."
+
+npm install
+
+chmod +x agent.js
+
+sudo ln -sf $INSTALL_DIR/agent.js /usr/local/bin/dockmon-agent
 
 echo ""
 echo "DockMon Agent installed successfully!"
