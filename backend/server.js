@@ -85,9 +85,7 @@ app.use(async (req, res, next) => {
     next();
 
   } catch (error) {
-
     next(error);
-
   }
 
 });
@@ -176,7 +174,7 @@ wss.on("connection", (ws) => {
 
       registerConnection(device.id, ws);
 
-      console.log(`Agent connected: ${device.device_name}`);
+      console.log(`✅ Agent connected: ${device.device_name}`);
 
       await supabase
         .from("devices")
@@ -201,34 +199,47 @@ wss.on("connection", (ws) => {
 
           const agentMessage = JSON.parse(messageBuffer.toString());
 
+          // Ignore heartbeats
+          if (agentMessage.type === "ping") return;
+
           const handled = resolvePendingRequest({
             ...agentMessage,
             device_id: device.id
           });
 
           if (!handled) {
-            console.log("Unsolicited message from agent", {
+            console.log("⚠️ Unhandled agent message", {
               deviceId: device.id,
               type: agentMessage.type
             });
           }
 
         } catch (err) {
-
-          console.error("Failed to process agent message:", err);
-
+          console.error("❌ Failed to process agent message:", err);
         }
 
       });
 
     } catch (error) {
 
-      console.error("Agent registration failed:", error);
+      console.error("❌ Agent registration failed:", error);
       ws.close(1011, "Registration failed");
 
     }
 
   });
+
+  /*
+  ------------------------------------------------
+  HEARTBEAT (KEEP CONNECTION ALIVE)
+  ------------------------------------------------
+  */
+
+  const interval = setInterval(() => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "ping" }));
+    }
+  }, 30000);
 
   /*
   ------------------------------------------------
@@ -238,13 +249,15 @@ wss.on("connection", (ws) => {
 
   ws.on("close", async () => {
 
+    clearInterval(interval);
+
     const deviceId = unregisterConnection(ws);
 
     if (!deviceId) return;
 
     rejectPendingRequestsForDevice(deviceId);
 
-    console.log(`Agent disconnected: ${deviceId}`);
+    console.log(`🔌 Agent disconnected: ${deviceId}`);
 
     try {
 
@@ -254,9 +267,7 @@ wss.on("connection", (ws) => {
         .eq("id", deviceId);
 
     } catch (err) {
-
       console.error("Failed to mark device offline:", err);
-
     }
 
   });
@@ -281,5 +292,5 @@ START SERVER
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-  console.log(`DockMon backend running on port ${PORT}`);
+  console.log(`🚀 DockMon backend running on port ${PORT}`);
 });
