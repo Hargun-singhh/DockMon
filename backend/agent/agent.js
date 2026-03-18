@@ -57,6 +57,8 @@ let reconnectDelay = 1000;
 const MAX_DELAY = 5000;
 let shuttingDown = false;
 let isConnecting = false;
+let lastConnectedAt = 0;        // timestamp of last successful connect
+const CONNECT_COOLDOWN = 3000;  // ignore reconnect triggers for 3s after connecting
 
 /*
 ---------------------------------------
@@ -114,22 +116,27 @@ const handlers = {
     const containers = await docker.listContainers({ all: true });
     return containers.map(formatContainer);
   },
+
   async start_container({ container_id }) {
     await docker.getContainer(container_id).start();
     return { success: true };
   },
+
   async stop_container({ container_id }) {
     await docker.getContainer(container_id).stop();
     return { success: true };
   },
+
   async restart_container({ container_id }) {
     await docker.getContainer(container_id).restart();
     return { success: true };
   },
+
   async remove_container({ container_id }) {
     await docker.getContainer(container_id).remove({ force: true });
     return { success: true };
   },
+
   async logs({ container_id }) {
     const container = docker.getContainer(container_id);
     const buffer = await container.logs({
@@ -141,29 +148,37 @@ const handlers = {
     if (!buffer) return "No logs";
     return buffer.toString("utf8") || "No logs";
   },
+
   async stats({ container_id }) {
     const stats = await getStats(docker.getContainer(container_id));
+
     const cpuDelta =
       stats.cpu_stats.cpu_usage.total_usage -
       stats.precpu_stats.cpu_usage.total_usage;
+
     const systemDelta =
       stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
+
     const cpuCount =
       stats.cpu_stats.online_cpus ||
       stats.cpu_stats.cpu_usage.percpu_usage.length;
+
     const cpu =
       systemDelta > 0 && cpuDelta > 0
         ? (cpuDelta / systemDelta) * cpuCount * 100
         : 0;
+
     return {
       cpu_percent: Number(cpu.toFixed(2)),
       memory_usage: stats.memory_stats.usage,
       memory_limit: stats.memory_stats.limit,
     };
   },
+
   async list_images() {
     return await docker.listImages();
   },
+
   async pull_image({ image }) {
     return new Promise((resolve, reject) => {
       docker.pull(image, (err, stream) => {
@@ -175,6 +190,7 @@ const handlers = {
       });
     });
   },
+
   async run_container({ image, name }) {
     const container = await docker.createContainer({ Image: image, name });
     await container.start();
@@ -238,14 +254,10 @@ const connect = () => {
 
   ws.on("open", () => {
     isConnecting = false;
-    reconnectDelay = 1000; // reset backoff on success
-
+    reconnectDelay = 1000;
+    lastConnectedAt = Date.now(); // record connect time
     log("✅ Connected");
-
-    sendJson({
-      type: "register",
-      device_token: deviceToken,
-    });
+    sendJson({ type: "register", device_token: deviceToken });
   });
 
   ws.on("message", async (raw) => {
@@ -261,39 +273,54 @@ const connect = () => {
 
   ws.on("close", () => {
     isConnecting = false;
+
+    // If we just connected very recently, this is a server-side blip —
+    // use a short fixed delay instead of immediate reconnect to avoid loops
+    const timeSinceConnect = Date.now() - lastConnectedAt;
+    if (timeSinceConnect < CONNECT_COOLDOWN) {
+      log("🔁 Brief disconnect after connect — waiting 2s before retry");
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, 2000);
+      return;
+    }
+
     scheduleReconnect();
   });
 
   ws.on("error", (err) => {
     isConnecting = false;
     log("⚠️ WS Error", { error: err.message });
-    // "close" fires after "error" — scheduleReconnect() will be called there
+    // "close" always fires after "error" — reconnect handled there
   });
 };
 
 /*
 ---------------------------------------
 IMMEDIATE RECONNECT
-Bypasses backoff — use for wake/internet events
+Bypasses backoff — used for wake/internet events
 ---------------------------------------
 */
 
 const immediateReconnect = (reason) => {
   if (shuttingDown) return;
-  if (ws && ws.readyState === WebSocket.OPEN) return; // already fine
+
+  // Already connected — nothing to do
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  // Just connected recently — skip to avoid reconnect storms
+  const timeSinceConnect = Date.now() - lastConnectedAt;
+  if (timeSinceConnect < CONNECT_COOLDOWN) return;
 
   log(`⚡ ${reason} — reconnecting immediately`);
 
-  // Cancel any pending delayed reconnect
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
 
-  // Reset backoff so the next failure starts fresh
   reconnectDelay = 1000;
-
-  // Reset the in-progress guard so connect() isn't blocked
   isConnecting = false;
 
   connect();
@@ -321,13 +348,11 @@ const scheduleReconnect = () => {
 /*
 ---------------------------------------
 SLEEP / WAKE DETECTION
-Compares real elapsed time vs expected tick interval.
-A gap >> expected means the process was suspended (sleep).
 ---------------------------------------
 */
 
-const SLEEP_CHECK_INTERVAL = 2000; // ms
-const SLEEP_THRESHOLD = SLEEP_CHECK_INTERVAL * 2; // gap > 4s = likely slept
+const SLEEP_CHECK_INTERVAL = 2000;
+const SLEEP_THRESHOLD = SLEEP_CHECK_INTERVAL * 2;
 
 let lastTickTime = Date.now();
 
@@ -346,13 +371,13 @@ setInterval(() => {
 /*
 ---------------------------------------
 INTERNET RECOVERY DETECTION
-Fast DNS poll — triggers immediate reconnect (no backoff delay)
 ---------------------------------------
 */
 
 let lastDnsOk = true;
 
 setInterval(() => {
+  // Already connected — just mark DNS as ok and skip
   if (ws && ws.readyState === WebSocket.OPEN) {
     lastDnsOk = true;
     return;
@@ -362,16 +387,14 @@ setInterval(() => {
     const ok = !err;
 
     if (ok && !lastDnsOk) {
-      // Was offline, now back — reconnect immediately
+      // Was offline, now back
       immediateReconnect("Internet restored");
+    } else if (ok) {
+      // Internet is up but we're not connected
+      immediateReconnect("Internet available, not connected");
     }
 
     lastDnsOk = ok;
-
-    // Also try to connect if we're just disconnected (covers normal drops)
-    if (ok && (!ws || ws.readyState !== WebSocket.OPEN)) {
-      immediateReconnect("Internet available, not connected");
-    }
   });
 }, 2000);
 
