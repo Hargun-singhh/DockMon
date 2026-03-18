@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 echo "🚀 Installing DockMon Agent..."
 
 INSTALL_DIR="$HOME/.dockmon"
@@ -37,10 +36,11 @@ if [ ! -f package.json ]; then
   npm init -y >/dev/null 2>&1
 fi
 
-# Show output + enforce 120s timeout so it never hangs silently
-if ! npm install ws dockerode dotenv --prefer-offline --no-audit --no-fund --loglevel=error; then
-  echo "⚠️ npm install failed or timed out, retrying once..."
-  npm install ws dockerode dotenv --prefer-offline --no-audit --no-fund --loglevel=error
+npm install ws dockerode dotenv --no-audit --no-fund --loglevel=error
+
+if [ $? -ne 0 ]; then
+  echo "❌ npm install failed. Check your internet connection and try again."
+  exit 1
 fi
 
 echo "✅ Dependencies installed"
@@ -65,6 +65,7 @@ fi
 node "$HOME/.dockmon/agent.js"
 EOF
 chmod +x "$BIN_DIR/dockmon-agent"
+echo "✅ CLI created"
 
 # -----------------------------
 # PATH SETUP
@@ -99,6 +100,7 @@ echo "🚀 Starting agent..."
 pm2 delete dockmon-agent >/dev/null 2>&1 || true
 pm2 start "$INSTALL_DIR/agent.js" --name dockmon-agent
 pm2 save >/dev/null 2>&1
+echo "✅ Agent started"
 
 # -----------------------------
 # PM2 STARTUP
