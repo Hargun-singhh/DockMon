@@ -57,8 +57,8 @@ const CONNECT_COOLDOWN = 4000;
 // Heartbeat state
 let pingTimer = null;
 let pongTimer = null;
-const PING_INTERVAL = 10000;  // send ping every 10s
-const PONG_TIMEOUT = 5000;    // if no pong within 5s, socket is dead
+const PING_INTERVAL = 15000; // send ping every 15s
+const PONG_TIMEOUT  = 8000;  // wait 8s for pong before declaring dead
 
 /*
 ---------------------------------------
@@ -103,9 +103,9 @@ const isConnected = () => ws && ws.readyState === WebSocket.OPEN;
 /*
 ---------------------------------------
 HEARTBEAT
-Sends a ping every 10s. If no pong arrives within 5s,
-the socket is treated as dead and force-closed.
-This catches zombie connections after WiFi drops.
+Uses WebSocket native ping/pong frames (not JSON messages).
+The ws library automatically handles pong replies from the server.
+If no pong arrives within PONG_TIMEOUT, the socket is dead.
 ---------------------------------------
 */
 
@@ -114,30 +114,38 @@ const stopHeartbeat = () => {
   if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
 };
 
-const startHeartbeat = () => {
+const startHeartbeat = (socket) => {
   stopHeartbeat();
 
   pingTimer = setInterval(() => {
-    if (!isConnected()) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       stopHeartbeat();
       return;
     }
 
-    // Send ping and start pong timeout
-    sendJson({ type: "ping" });
+    // Use native WebSocket ping frame
+    socket.ping();
 
+    // Start pong timeout
     pongTimer = setTimeout(() => {
       log("💔 Ping timeout — connection is dead, force-closing");
       stopHeartbeat();
-      if (ws) {
-        try { ws.terminate(); } catch {}
+      try { socket.terminate(); } catch {}
+      if (ws === socket) {
         ws = null;
+        scheduleReconnect();
       }
-      // Trigger reconnect
-      scheduleReconnect();
     }, PONG_TIMEOUT);
 
   }, PING_INTERVAL);
+
+  // Clear pong timeout when native pong arrives
+  socket.on("pong", () => {
+    if (pongTimer) {
+      clearTimeout(pongTimer);
+      pongTimer = null;
+    }
+  });
 };
 
 /*
@@ -274,37 +282,31 @@ const connect = () => {
   }
 
   log("🔌 Connecting...");
-  ws = new WebSocket(WS_URL);
+  const socket = new WebSocket(WS_URL);
+  ws = socket;
 
-  ws.on("open", () => {
+  socket.on("open", () => {
     isConnecting = false;
     reconnectDelay = 1000;
     lastConnectedAt = Date.now();
     log("✅ Connected");
     sendJson({ type: "register", device_token: deviceToken });
-    startHeartbeat(); // start heartbeat on every fresh connection
+    startHeartbeat(socket);
   });
 
-  ws.on("message", async (raw) => {
+  socket.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-
-      // Pong received — cancel the pong timeout, connection is alive
-      if (msg.type === "ping" || msg.type === "pong") {
-        if (pongTimer) {
-          clearTimeout(pongTimer);
-          pongTimer = null;
-        }
-        return;
-      }
-
+      // Ignore JSON-level pings from server — handled by native pong above
+      if (msg.type === "ping") return;
       if (msg.type === "command") await handleCommand(msg);
     } catch (e) {
       log("❌ Parse error", { error: e.message });
     }
   });
 
-  ws.on("close", () => {
+  socket.on("close", () => {
+    if (ws !== socket) return; // stale socket event, ignore
     isConnecting = false;
     stopHeartbeat();
 
@@ -321,7 +323,8 @@ const connect = () => {
     }
   });
 
-  ws.on("error", (err) => {
+  socket.on("error", (err) => {
+    if (ws !== socket) return;
     isConnecting = false;
     stopHeartbeat();
     log("⚠️ WS Error", { error: err.message });
@@ -392,27 +395,17 @@ setInterval(() => {
 /*
 ---------------------------------------
 INTERNET RECOVERY DETECTION
-Checks every 2s: internet up but not connected?
-Also detects zombie sockets by checking if ws is
-open but ping has been timing out.
 ---------------------------------------
 */
 
 setInterval(() => {
-  // Skip during cooldown
   const timeSinceConnect = Date.now() - lastConnectedAt;
   if (timeSinceConnect < CONNECT_COOLDOWN) return;
-
-  // Skip if already connecting or retry is scheduled
   if (isConnecting || reconnectTimer) return;
-
-  // If socket appears open, heartbeat handles zombie detection
   if (isConnected()) return;
 
   dns.lookup("1.1.1.1", (err) => {
-    if (!err) {
-      immediateReconnect("Internet available, not connected");
-    }
+    if (!err) immediateReconnect("Internet available, not connected");
   });
 }, 2000);
 
