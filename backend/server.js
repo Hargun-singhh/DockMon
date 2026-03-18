@@ -27,7 +27,6 @@ app.use(express.json({ limit: "1mb" }));
 HEALTH CHECK
 ------------------------------------------------
 */
-
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
@@ -37,7 +36,6 @@ app.get("/health", (_req, res) => {
 INSTALL SCRIPT
 ------------------------------------------------
 */
-
 app.get("/install", (_req, res) => {
   res.sendFile(path.join(__dirname, "install.sh"));
 });
@@ -47,7 +45,6 @@ app.get("/install", (_req, res) => {
 SERVE AGENT FILE
 ------------------------------------------------
 */
-
 app.get("/agent.js", (_req, res) => {
   const agentPath = path.join(__dirname, "agent", "agent.js");
 
@@ -64,9 +61,7 @@ app.get("/agent.js", (_req, res) => {
 AUTH MIDDLEWARE
 ------------------------------------------------
 */
-
 app.use(async (req, res, next) => {
-
   const publicRoutes = ["/health", "/install", "/agent.js"];
 
   if (publicRoutes.includes(req.path)) {
@@ -74,7 +69,6 @@ app.use(async (req, res, next) => {
   }
 
   try {
-
     const user = await verifyAuthToken(req.headers.authorization);
 
     if (!user) {
@@ -87,7 +81,6 @@ app.use(async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-
 });
 
 /*
@@ -95,7 +88,6 @@ app.use(async (req, res, next) => {
 API ROUTES
 ------------------------------------------------
 */
-
 app.use("/devices", devicesRouter);
 
 /*
@@ -103,9 +95,7 @@ app.use("/devices", devicesRouter);
 ERROR HANDLER
 ------------------------------------------------
 */
-
 app.use((error, _req, res, _next) => {
-
   const statusCode = error.statusCode || 500;
   const message = error.message || "Internal server error";
 
@@ -114,7 +104,6 @@ app.use((error, _req, res, _next) => {
   }
 
   res.status(statusCode).json({ error: message });
-
 });
 
 /*
@@ -122,9 +111,7 @@ app.use((error, _req, res, _next) => {
 WEBSOCKET UPGRADE
 ------------------------------------------------
 */
-
 server.on("upgrade", (request, socket, head) => {
-
   if (request.url !== "/agent") {
     socket.destroy();
     return;
@@ -133,108 +120,98 @@ server.on("upgrade", (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });
-
 });
 
 /*
 ------------------------------------------------
-WEBSOCKET CONNECTION (AGENTS)
+WEBSOCKET CONNECTION (FIXED)
 ------------------------------------------------
 */
-
 wss.on("connection", (ws) => {
 
+  let registered = false;
   let registeredDevice = null;
 
-  ws.once("message", async (buffer) => {
-
+  ws.on("message", async (buffer) => {
     try {
-
       const message = JSON.parse(buffer.toString());
 
-      if (message.type !== "register" || !message.device_token) {
-        ws.close(4001, "Expected register message with device_token");
-        return;
-      }
-
-      const { data: device, error } = await supabase
-        .from("devices")
-        .select("id, device_name")
-        .eq("device_token", message.device_token)
-        .maybeSingle();
-
-      if (error) throw error;
-
-      if (!device) {
-        ws.close(4004, "Invalid device token");
-        return;
-      }
-
-      registeredDevice = device;
-
-      registerConnection(device.id, ws);
-
-      console.log(`✅ Agent connected: ${device.device_name}`);
-
-      await supabase
-        .from("devices")
-        .update({ status: "online" })
-        .eq("id", device.id);
-
-      ws.send(JSON.stringify({
-        type: "registered",
-        device_id: device.id,
-        device_name: device.device_name
-      }));
-
       /*
-      ---------------------------------------------
-      RECEIVE AGENT RESPONSES
-      ---------------------------------------------
+      -----------------------------------------
+      REGISTER (ONLY FIRST TIME)
+      -----------------------------------------
       */
+      if (!registered) {
 
-      ws.on("message", async (messageBuffer) => {
-
-        try {
-
-          const agentMessage = JSON.parse(messageBuffer.toString());
-
-          // Ignore heartbeats
-          if (agentMessage.type === "ping") return;
-
-          const handled = resolvePendingRequest({
-            ...agentMessage,
-            device_id: device.id
-          });
-
-          if (!handled) {
-            console.log("⚠️ Unhandled agent message", {
-              deviceId: device.id,
-              type: agentMessage.type
-            });
-          }
-
-        } catch (err) {
-          console.error("❌ Failed to process agent message:", err);
+        if (message.type !== "register" || !message.device_token) {
+          ws.close(4001, "Expected register message");
+          return;
         }
 
+        const { data: device, error } = await supabase
+          .from("devices")
+          .select("id, device_name")
+          .eq("device_token", message.device_token)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        if (!device) {
+          ws.close(4004, "Invalid device token");
+          return;
+        }
+
+        registered = true;
+        registeredDevice = device;
+
+        registerConnection(device.id, ws);
+
+        console.log(`✅ Agent connected: ${device.device_name}`);
+
+        await supabase
+          .from("devices")
+          .update({ status: "online" })
+          .eq("id", device.id);
+
+        ws.send(JSON.stringify({
+          type: "registered",
+          device_id: device.id,
+          device_name: device.device_name
+        }));
+
+        return;
+      }
+
+      /*
+      -----------------------------------------
+      HANDLE AGENT RESPONSES
+      -----------------------------------------
+      */
+
+      if (message.type === "ping") return;
+
+      const handled = resolvePendingRequest({
+        ...message,
+        device_id: registeredDevice.id
       });
 
-    } catch (error) {
+      if (!handled) {
+        console.log("⚠️ Unhandled agent message", {
+          deviceId: registeredDevice.id,
+          type: message.type
+        });
+      }
 
-      console.error("❌ Agent registration failed:", error);
-      ws.close(1011, "Registration failed");
-
+    } catch (err) {
+      console.error("❌ WS message error:", err);
     }
-
   });
 
   /*
   ------------------------------------------------
-  HEARTBEAT (KEEP CONNECTION ALIVE)
+  HEARTBEAT
   ------------------------------------------------
   */
-
   const interval = setInterval(() => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "ping" }));
@@ -243,12 +220,10 @@ wss.on("connection", (ws) => {
 
   /*
   ------------------------------------------------
-  AGENT DISCONNECT
+  DISCONNECT
   ------------------------------------------------
   */
-
   ws.on("close", async () => {
-
     clearInterval(interval);
 
     const deviceId = unregisterConnection(ws);
@@ -260,25 +235,20 @@ wss.on("connection", (ws) => {
     console.log(`🔌 Agent disconnected: ${deviceId}`);
 
     try {
-
       await supabase
         .from("devices")
         .update({ status: "offline" })
         .eq("id", deviceId);
-
     } catch (err) {
       console.error("Failed to mark device offline:", err);
     }
-
   });
 
   ws.on("error", (error) => {
-
     console.error("WebSocket error", {
       deviceId: registeredDevice?.id,
       error
     });
-
   });
 
 });
@@ -288,7 +258,6 @@ wss.on("connection", (ws) => {
 START SERVER
 ------------------------------------------------
 */
-
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
