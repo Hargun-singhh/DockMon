@@ -92,6 +92,8 @@ const clearReconnectTimer = () => {
   }
 };
 
+const isConnected = () => ws && ws.readyState === WebSocket.OPEN;
+
 /*
 ---------------------------------------
 HELPERS
@@ -209,19 +211,15 @@ const handleCommand = async (msg) => {
 /*
 ---------------------------------------
 CONNECT
-Single entry point — all reconnect paths go through here.
-Guards ensure only one connection attempt at a time.
 ---------------------------------------
 */
 
 const connect = () => {
   if (shuttingDown) return;
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (isConnected()) return;
   if (isConnecting) return;
 
-  // Cancel any pending reconnect timer — we're connecting now
   clearReconnectTimer();
-
   isConnecting = true;
 
   if (ws) {
@@ -230,7 +228,6 @@ const connect = () => {
   }
 
   log("🔌 Connecting...");
-
   ws = new WebSocket(WS_URL);
 
   ws.on("open", () => {
@@ -252,14 +249,10 @@ const connect = () => {
 
   ws.on("close", () => {
     isConnecting = false;
-
     const timeSinceConnect = Date.now() - lastConnectedAt;
-
     if (timeSinceConnect < CONNECT_COOLDOWN) {
-      // Too soon after connecting — server-side blip, wait before retrying
-      // Clear any existing timer first to prevent double-connect
       clearReconnectTimer();
-      log("🔁 Brief disconnect — waiting 3s before retry");
+      log("🔁 Brief disconnect — waiting 3s");
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         connect();
@@ -272,32 +265,26 @@ const connect = () => {
   ws.on("error", (err) => {
     isConnecting = false;
     log("⚠️ WS Error", { error: err.message });
-    // "close" always fires after "error" — reconnect handled there
   });
 };
 
 /*
 ---------------------------------------
 IMMEDIATE RECONNECT
-Bypasses backoff — used for wake/internet events.
-Respects cooldown to avoid reconnect storms.
 ---------------------------------------
 */
 
 const immediateReconnect = (reason) => {
   if (shuttingDown) return;
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (isConnected()) return;
   if (isConnecting) return;
 
-  // Within cooldown window after last connect — skip
   const timeSinceConnect = Date.now() - lastConnectedAt;
   if (timeSinceConnect < CONNECT_COOLDOWN) return;
 
   log(`⚡ ${reason} — reconnecting immediately`);
-
   clearReconnectTimer();
   reconnectDelay = 1000;
-
   connect();
 };
 
@@ -309,9 +296,7 @@ SCHEDULED RECONNECT (with backoff)
 
 const scheduleReconnect = () => {
   if (shuttingDown || reconnectTimer) return;
-
   log("🔁 Reconnecting...", { delay: reconnectDelay });
-
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
@@ -342,31 +327,26 @@ setInterval(() => {
 /*
 ---------------------------------------
 INTERNET RECOVERY DETECTION
+Simply checks: do we have internet but no connection?
+No state flags — works reliably every time.
 ---------------------------------------
 */
 
-let lastDnsOk = true;
-
 setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    lastDnsOk = true;
-    return;
-  }
+  if (isConnected()) return;
 
-  // Skip DNS check during cooldown — avoids triggering right after connect
+  // Skip during cooldown window
   const timeSinceConnect = Date.now() - lastConnectedAt;
   if (timeSinceConnect < CONNECT_COOLDOWN) return;
 
-  dns.lookup("1.1.1.1", (err) => {
-    const ok = !err;
+  // Skip if already attempting or a retry is scheduled
+  if (isConnecting || reconnectTimer) return;
 
-    if (ok && !lastDnsOk) {
-      immediateReconnect("Internet restored");
-    } else if (ok) {
+  dns.lookup("1.1.1.1", (err) => {
+    if (!err) {
+      // Internet is up but we have no connection — reconnect immediately
       immediateReconnect("Internet available, not connected");
     }
-
-    lastDnsOk = ok;
   });
 }, 2000);
 
