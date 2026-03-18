@@ -54,6 +54,12 @@ let isConnecting = false;
 let lastConnectedAt = 0;
 const CONNECT_COOLDOWN = 4000;
 
+// Heartbeat state
+let pingTimer = null;
+let pongTimer = null;
+const PING_INTERVAL = 10000;  // send ping every 10s
+const PONG_TIMEOUT = 5000;    // if no pong within 5s, socket is dead
+
 /*
 ---------------------------------------
 LOG
@@ -93,6 +99,46 @@ const clearReconnectTimer = () => {
 };
 
 const isConnected = () => ws && ws.readyState === WebSocket.OPEN;
+
+/*
+---------------------------------------
+HEARTBEAT
+Sends a ping every 10s. If no pong arrives within 5s,
+the socket is treated as dead and force-closed.
+This catches zombie connections after WiFi drops.
+---------------------------------------
+*/
+
+const stopHeartbeat = () => {
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+};
+
+const startHeartbeat = () => {
+  stopHeartbeat();
+
+  pingTimer = setInterval(() => {
+    if (!isConnected()) {
+      stopHeartbeat();
+      return;
+    }
+
+    // Send ping and start pong timeout
+    sendJson({ type: "ping" });
+
+    pongTimer = setTimeout(() => {
+      log("💔 Ping timeout — connection is dead, force-closing");
+      stopHeartbeat();
+      if (ws) {
+        try { ws.terminate(); } catch {}
+        ws = null;
+      }
+      // Trigger reconnect
+      scheduleReconnect();
+    }, PONG_TIMEOUT);
+
+  }, PING_INTERVAL);
+};
 
 /*
 ---------------------------------------
@@ -236,11 +282,22 @@ const connect = () => {
     lastConnectedAt = Date.now();
     log("✅ Connected");
     sendJson({ type: "register", device_token: deviceToken });
+    startHeartbeat(); // start heartbeat on every fresh connection
   });
 
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
+
+      // Pong received — cancel the pong timeout, connection is alive
+      if (msg.type === "ping" || msg.type === "pong") {
+        if (pongTimer) {
+          clearTimeout(pongTimer);
+          pongTimer = null;
+        }
+        return;
+      }
+
       if (msg.type === "command") await handleCommand(msg);
     } catch (e) {
       log("❌ Parse error", { error: e.message });
@@ -249,6 +306,8 @@ const connect = () => {
 
   ws.on("close", () => {
     isConnecting = false;
+    stopHeartbeat();
+
     const timeSinceConnect = Date.now() - lastConnectedAt;
     if (timeSinceConnect < CONNECT_COOLDOWN) {
       clearReconnectTimer();
@@ -264,6 +323,7 @@ const connect = () => {
 
   ws.on("error", (err) => {
     isConnecting = false;
+    stopHeartbeat();
     log("⚠️ WS Error", { error: err.message });
   });
 };
@@ -319,6 +379,11 @@ setInterval(() => {
   const gap = now - lastTickTime;
   if (gap > SLEEP_THRESHOLD) {
     log(`😴 Wake detected (gap: ${gap}ms)`);
+    stopHeartbeat();
+    if (ws) {
+      try { ws.terminate(); } catch {}
+      ws = null;
+    }
     immediateReconnect("System wake");
   }
   lastTickTime = now;
@@ -327,24 +392,25 @@ setInterval(() => {
 /*
 ---------------------------------------
 INTERNET RECOVERY DETECTION
-Simply checks: do we have internet but no connection?
-No state flags — works reliably every time.
+Checks every 2s: internet up but not connected?
+Also detects zombie sockets by checking if ws is
+open but ping has been timing out.
 ---------------------------------------
 */
 
 setInterval(() => {
-  if (isConnected()) return;
-
-  // Skip during cooldown window
+  // Skip during cooldown
   const timeSinceConnect = Date.now() - lastConnectedAt;
   if (timeSinceConnect < CONNECT_COOLDOWN) return;
 
-  // Skip if already attempting or a retry is scheduled
+  // Skip if already connecting or retry is scheduled
   if (isConnecting || reconnectTimer) return;
+
+  // If socket appears open, heartbeat handles zombie detection
+  if (isConnected()) return;
 
   dns.lookup("1.1.1.1", (err) => {
     if (!err) {
-      // Internet is up but we have no connection — reconnect immediately
       immediateReconnect("Internet available, not connected");
     }
   });
