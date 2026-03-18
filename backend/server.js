@@ -124,7 +124,7 @@ server.on("upgrade", (request, socket, head) => {
 
 /*
 ------------------------------------------------
-WEBSOCKET CONNECTION (FIXED)
+WEBSOCKET CONNECTION (FINAL FIXED)
 ------------------------------------------------
 */
 wss.on("connection", (ws) => {
@@ -138,7 +138,7 @@ wss.on("connection", (ws) => {
 
       /*
       -----------------------------------------
-      REGISTER (ONLY FIRST TIME)
+      REGISTER (FIRST MESSAGE)
       -----------------------------------------
       */
       if (!registered) {
@@ -164,13 +164,18 @@ wss.on("connection", (ws) => {
         registered = true;
         registeredDevice = device;
 
+        // 🔥 overwrite old connection
         registerConnection(device.id, ws);
 
         console.log(`✅ Agent connected: ${device.device_name}`);
 
+        // 🔥 mark online immediately
         await supabase
           .from("devices")
-          .update({ status: "online" })
+          .update({
+            status: "online",
+            last_seen: new Date().toISOString()
+          })
           .eq("id", device.id);
 
         ws.send(JSON.stringify({
@@ -184,10 +189,24 @@ wss.on("connection", (ws) => {
 
       /*
       -----------------------------------------
-      HANDLE AGENT RESPONSES
+      KEEP DEVICE ONLINE (CRITICAL)
       -----------------------------------------
       */
+      if (registeredDevice) {
+        await supabase
+          .from("devices")
+          .update({
+            status: "online",
+            last_seen: new Date().toISOString()
+          })
+          .eq("id", registeredDevice.id);
+      }
 
+      /*
+      -----------------------------------------
+      HANDLE RESPONSES
+      -----------------------------------------
+      */
       if (message.type === "ping") return;
 
       const handled = resolvePendingRequest({
