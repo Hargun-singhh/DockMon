@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 
-require("dotenv").config();
+require("dotenv").config({quiet: true });
 
 const WebSocket = require("ws");
 const Docker = require("dockerode");
 const dns = require("dns");
+
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
 
 /*
 ---------------------------------------
@@ -19,10 +24,33 @@ const docker =
     ? new Docker({ socketPath: "//./pipe/docker_engine" })
     : new Docker({ socketPath: "/var/run/docker.sock" });
 
-const deviceToken = process.env.DEVICE_TOKEN;
+
+const CONFIG_PATH = path.join(os.homedir(), ".dockmon", "config.json");
+
+const getToken = () => {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return null;
+    }
+
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+
+    if (!raw) return null;
+
+    const data = JSON.parse(raw);
+
+    return data.deviceToken || null;
+  } catch (err) {
+    console.error("⚠️ Failed to read config:", err.message);
+    return null;
+  }
+};
+
+const deviceToken = getToken();
 
 if (!deviceToken) {
-  console.error("❌ Missing DEVICE_TOKEN");
+  console.error("❌ No DEVICE_TOKEN found.");
+  console.error("👉 Run: dockmon-agent login");
   process.exit(1);
 }
 
