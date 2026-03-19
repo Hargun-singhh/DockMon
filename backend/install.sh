@@ -31,7 +31,7 @@ fi
 
 echo "📥 Downloading agent for ${OS}/${ARCH}..."
 
-DOWNLOAD_URL="https://github.com/yourusername/dockmon/releases/latest/download/${BINARY}"
+DOWNLOAD_URL="https://github.com/Hargun-singhh/DockMon/releases/latest/download/${BINARY}"
 
 curl -fsSL --max-time 30 "$DOWNLOAD_URL" -o "$BIN_DIR/dockmon-agent"
 
