@@ -25,7 +25,7 @@ import (
 
 const (
 	WS_URL          = "wss://dockmon.onrender.com/agent"
-	GITHUB_REPO     = "yourusername/dockmon"
+	GITHUB_REPO     = "Hargun-singhh/DockMon"
 	CURRENT_VERSION = "1.0.0"
 	PING_INTERVAL   = 15 * time.Second
 	PONG_TIMEOUT    = 8 * time.Second
