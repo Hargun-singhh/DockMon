@@ -26,7 +26,7 @@ import (
 const (
 	WS_URL          = "wss://dockmon.onrender.com/agent"
 	GITHUB_REPO     = "Hargun-singhh/DockMon"
-	CURRENT_VERSION = "1.0.3"
+	CURRENT_VERSION = "1.0.5"
 	PING_INTERVAL   = 15 * time.Second
 	PONG_TIMEOUT    = 8 * time.Second
 	MAX_BACKOFF     = 5 * time.Second
@@ -67,89 +67,7 @@ type GithubRelease struct {
 }
 
 func checkAndUpdate() {
-	log("🔍 Checking for updates...")
-
-	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GITHUB_REPO))
-	if err != nil {
-		logf("⚠️ Update check failed: %s", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	var release GithubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return
-	}
-
-	latest := strings.TrimPrefix(release.TagName, "v")
-	if latest == CURRENT_VERSION {
-		logf("✅ Already on latest version %s", CURRENT_VERSION)
-		return
-	}
-
-	logf("🆕 New version available: %s (current: %s)", latest, CURRENT_VERSION)
-
-	assetName := fmt.Sprintf("dockmon-agent-%s-%s", runtime.GOOS, runtime.GOARCH)
-	if runtime.GOOS == "windows" {
-		assetName += ".exe"
-	}
-
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.BrowserDownloadURL
-			break
-		}
-	}
-
-	if downloadURL == "" {
-		logf("⚠️ No binary found for %s/%s", runtime.GOOS, runtime.GOARCH)
-		return
-	}
-
-	exePath, err := os.Executable()
-	if err != nil {
-		return
-	}
-	exePath, _ = filepath.EvalSymlinks(exePath)
-	tmpPath := exePath + ".new"
-
-	out, err := os.Create(tmpPath)
-	if err != nil {
-		return
-	}
-
-	dlResp, err := http.Get(downloadURL)
-	if err != nil {
-		out.Close()
-		os.Remove(tmpPath)
-		return
-	}
-	defer dlResp.Body.Close()
-
-	if _, err := io.Copy(out, dlResp.Body); err != nil {
-		out.Close()
-		os.Remove(tmpPath)
-		return
-	}
-	out.Close()
-
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		os.Remove(tmpPath)
-		return
-	}
-
-	if err := os.Rename(tmpPath, exePath); err != nil {
-		os.Remove(tmpPath)
-		return
-	}
-
-	logf("✅ Updated to %s — restarting...", latest)
-	cmd := exec.Command(exePath, os.Args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Start()
-	os.Exit(0)
+	return
 }
 
 /*
