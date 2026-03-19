@@ -24,6 +24,47 @@ app.use(express.json({ limit: "1mb" }));
 
 /*
 ------------------------------------------------
+OFFLINE GRACE PERIOD
+Prevents flickering offline status during brief reconnects.
+Device is only marked offline if it hasn't reconnected within this window.
+------------------------------------------------
+*/
+const OFFLINE_GRACE_MS = 8000; // 8 seconds
+const offlineTimers = new Map(); // deviceId -> timer
+
+const scheduleOffline = (deviceId) => {
+  // Cancel any existing timer (e.g. rapid reconnect)
+  if (offlineTimers.has(deviceId)) {
+    clearTimeout(offlineTimers.get(deviceId));
+  }
+
+  const timer = setTimeout(async () => {
+    offlineTimers.delete(deviceId);
+
+    try {
+      await supabase
+        .from("devices")
+        .update({ status: "offline" })
+        .eq("id", deviceId);
+
+      console.log(`🔴 Device marked offline: ${deviceId}`);
+    } catch (err) {
+      console.error("Failed to mark device offline:", err);
+    }
+  }, OFFLINE_GRACE_MS);
+
+  offlineTimers.set(deviceId, timer);
+};
+
+const cancelOffline = (deviceId) => {
+  if (offlineTimers.has(deviceId)) {
+    clearTimeout(offlineTimers.get(deviceId));
+    offlineTimers.delete(deviceId);
+  }
+};
+
+/*
+------------------------------------------------
 HEALTH CHECK
 ------------------------------------------------
 */
@@ -124,7 +165,7 @@ server.on("upgrade", (request, socket, head) => {
 
 /*
 ------------------------------------------------
-WEBSOCKET CONNECTION (FINAL FIXED)
+WEBSOCKET CONNECTION
 ------------------------------------------------
 */
 wss.on("connection", (ws) => {
@@ -164,12 +205,15 @@ wss.on("connection", (ws) => {
         registered = true;
         registeredDevice = device;
 
-        // 🔥 overwrite old connection
+        // Cancel any pending offline timer for this device
+        cancelOffline(device.id);
+
+        // Overwrite old connection
         registerConnection(device.id, ws);
 
         console.log(`✅ Agent connected: ${device.device_name}`);
 
-        // 🔥 mark online immediately
+        // Mark online immediately
         await supabase
           .from("devices")
           .update({
@@ -189,7 +233,7 @@ wss.on("connection", (ws) => {
 
       /*
       -----------------------------------------
-      KEEP DEVICE ONLINE (CRITICAL)
+      KEEP DEVICE ONLINE
       -----------------------------------------
       */
       if (registeredDevice) {
@@ -228,18 +272,18 @@ wss.on("connection", (ws) => {
 
   /*
   ------------------------------------------------
-  HEARTBEAT
+  HEARTBEAT — every 10s (was 30s, too slow)
   ------------------------------------------------
   */
   const interval = setInterval(() => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "ping" }));
     }
-  }, 30000);
+  }, 10000);
 
   /*
   ------------------------------------------------
-  DISCONNECT
+  DISCONNECT — use grace period, not immediate offline
   ------------------------------------------------
   */
   ws.on("close", async () => {
@@ -251,16 +295,10 @@ wss.on("connection", (ws) => {
 
     rejectPendingRequestsForDevice(deviceId);
 
-    console.log(`🔌 Agent disconnected: ${deviceId}`);
+    console.log(`🔌 Agent disconnected: ${deviceId} — waiting ${OFFLINE_GRACE_MS}ms before marking offline`);
 
-    try {
-      await supabase
-        .from("devices")
-        .update({ status: "offline" })
-        .eq("id", deviceId);
-    } catch (err) {
-      console.error("Failed to mark device offline:", err);
-    }
+    // Don't mark offline immediately — give the agent time to reconnect
+    scheduleOffline(deviceId);
   });
 
   ws.on("error", (error) => {
