@@ -44,7 +44,7 @@ function generateDeviceToken() {
   return uuidv4();
 }
 
-function createPendingRequest(deviceId, timeoutMs = 15000) {
+function createPendingRequest(deviceId, timeoutMs = 120000) {
   const requestId = uuidv4();
 
   let cleanup;
