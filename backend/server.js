@@ -25,15 +25,12 @@ app.use(express.json({ limit: "1mb" }));
 /*
 ------------------------------------------------
 OFFLINE GRACE PERIOD
-Prevents flickering offline status during brief reconnects.
-Device is only marked offline if it hasn't reconnected within this window.
 ------------------------------------------------
 */
-const OFFLINE_GRACE_MS = 8000; // 8 seconds
-const offlineTimers = new Map(); // deviceId -> timer
+const OFFLINE_GRACE_MS = 8000;
+const offlineTimers = new Map();
 
 const scheduleOffline = (deviceId) => {
-  // Cancel any existing timer (e.g. rapid reconnect)
   if (offlineTimers.has(deviceId)) {
     clearTimeout(offlineTimers.get(deviceId));
   }
@@ -41,15 +38,15 @@ const scheduleOffline = (deviceId) => {
   const timer = setTimeout(async () => {
     offlineTimers.delete(deviceId);
 
-    try {
-      await supabase
-        .from("devices")
-        .update({ status: "offline" })
-        .eq("id", deviceId);
+    const { error } = await supabase
+      .from("devices")
+      .update({ status: "offline" })
+      .eq("id", deviceId);
 
+    if (error) {
+      console.error(`❌ Failed to mark offline: ${deviceId}`, error);
+    } else {
       console.log(`🔴 Device marked offline: ${deviceId}`);
-    } catch (err) {
-      console.error("Failed to mark device offline:", err);
     }
   }, OFFLINE_GRACE_MS);
 
@@ -88,7 +85,6 @@ SERVE AGENT FILE
 */
 app.get("/agent.js", (_req, res) => {
   const agentPath = path.join(__dirname, "agent", "agent.js");
-
   res.sendFile(agentPath, (err) => {
     if (err) {
       console.error("Failed to serve agent.js:", err);
@@ -104,21 +100,13 @@ AUTH MIDDLEWARE
 */
 app.use(async (req, res, next) => {
   const publicRoutes = ["/health", "/install", "/agent.js"];
-
-  if (publicRoutes.includes(req.path)) {
-    return next();
-  }
+  if (publicRoutes.includes(req.path)) return next();
 
   try {
     const user = await verifyAuthToken(req.headers.authorization);
-
-    if (!user) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
     req.user = user;
     next();
-
   } catch (error) {
     next(error);
   }
@@ -139,11 +127,7 @@ ERROR HANDLER
 app.use((error, _req, res, _next) => {
   const statusCode = error.statusCode || 500;
   const message = error.message || "Internal server error";
-
-  if (statusCode >= 500) {
-    console.error("Server error:", error);
-  }
-
+  if (statusCode >= 500) console.error("Server error:", error);
   res.status(statusCode).json({ error: message });
 });
 
@@ -157,7 +141,6 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });
@@ -169,7 +152,6 @@ WEBSOCKET CONNECTION
 ------------------------------------------------
 */
 wss.on("connection", (ws) => {
-
   let registered = false;
   let registeredDevice = null;
 
@@ -177,13 +159,7 @@ wss.on("connection", (ws) => {
     try {
       const message = JSON.parse(buffer.toString());
 
-      /*
-      -----------------------------------------
-      REGISTER (FIRST MESSAGE)
-      -----------------------------------------
-      */
       if (!registered) {
-
         if (message.type !== "register" || !message.device_token) {
           ws.close(4001, "Expected register message");
           return;
@@ -195,9 +171,13 @@ wss.on("connection", (ws) => {
           .eq("device_token", message.device_token)
           .maybeSingle();
 
-        if (error) throw error;
+        if (error) {
+          console.error("❌ Supabase select error:", error);
+          throw error;
+        }
 
         if (!device) {
+          console.log("❌ Invalid device token:", message.device_token?.slice(0, 8));
           ws.close(4004, "Invalid device token");
           return;
         }
@@ -205,22 +185,25 @@ wss.on("connection", (ws) => {
         registered = true;
         registeredDevice = device;
 
-        // Cancel any pending offline timer for this device
         cancelOffline(device.id);
-
-        // Overwrite old connection
         registerConnection(device.id, ws);
 
         console.log(`✅ Agent connected: ${device.device_name}`);
 
-        // Mark online immediately
-        await supabase
+        // Mark online with error logging
+        const { error: updateError } = await supabase
           .from("devices")
           .update({
             status: "online",
             last_seen: new Date().toISOString()
           })
           .eq("id", device.id);
+
+        if (updateError) {
+          console.error(`❌ Failed to mark online (${device.device_name}):`, updateError);
+        } else {
+          console.log(`✅ Marked online in Supabase: ${device.device_name}`);
+        }
 
         ws.send(JSON.stringify({
           type: "registered",
@@ -231,26 +214,21 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      /*
-      -----------------------------------------
-      KEEP DEVICE ONLINE
-      -----------------------------------------
-      */
+      // Keep device online on every message
       if (registeredDevice) {
-        await supabase
+        const { error: keepAliveError } = await supabase
           .from("devices")
           .update({
             status: "online",
             last_seen: new Date().toISOString()
           })
           .eq("id", registeredDevice.id);
+
+        if (keepAliveError) {
+          console.error("❌ Keep-alive update failed:", keepAliveError);
+        }
       }
 
-      /*
-      -----------------------------------------
-      HANDLE RESPONSES
-      -----------------------------------------
-      */
       if (message.type === "ping") return;
 
       const handled = resolvePendingRequest({
@@ -270,34 +248,18 @@ wss.on("connection", (ws) => {
     }
   });
 
-  /*
-  ------------------------------------------------
-  HEARTBEAT — every 10s (was 30s, too slow)
-  ------------------------------------------------
-  */
   const interval = setInterval(() => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "ping" }));
     }
   }, 10000);
 
-  /*
-  ------------------------------------------------
-  DISCONNECT — use grace period, not immediate offline
-  ------------------------------------------------
-  */
   ws.on("close", async () => {
     clearInterval(interval);
-
     const deviceId = unregisterConnection(ws);
-
     if (!deviceId) return;
-
     rejectPendingRequestsForDevice(deviceId);
-
     console.log(`🔌 Agent disconnected: ${deviceId} — waiting ${OFFLINE_GRACE_MS}ms before marking offline`);
-
-    // Don't mark offline immediately — give the agent time to reconnect
     scheduleOffline(deviceId);
   });
 
@@ -307,7 +269,6 @@ wss.on("connection", (ws) => {
       error
     });
   });
-
 });
 
 /*
